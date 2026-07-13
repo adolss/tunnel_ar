@@ -1,0 +1,15 @@
+{
+  "name": "zurich-tunnel-ar",
+  "version": "1.0.0",
+  "description": "Point your phone at the ground in central Zurich and watch the S-Bahn and long-distance trains move through the tunnels beneath you — live.",
+  "main": "app.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "puppeteer-core": "^25.3.0"
+  }
+}
