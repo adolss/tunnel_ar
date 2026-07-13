@@ -50,7 +50,9 @@ const CORRIDOR_CFG = {
 };
 
 const BOARDS = [
-  { query: 'Zürich HB', limit: 30 },
+  { query: 'Zürich HB', limit: 40 },
+  { query: 'Zürich HB SZU', limit: 10 },   // SZU deep station has its own id — S4/S10
+                                           // departures never show on the main HB board
   { query: 'Zürich Stadelhofen', limit: 20 },
   { query: 'Zürich Oerlikon', limit: 20 },
   { query: 'Stettbach', limit: 15 },
@@ -66,7 +68,21 @@ const BOARDS = [
   { query: 'Zürich, Schwamendingerplatz', limit: 15 },
 ];
 
-const REFRESH_MS = 150 * 1000;         // 14 boards per cycle — stay inside API rate limits
+// Compass calibration targets: prominent, street-visible Zurich landmarks.
+// h = approximate height of the visual target above local street level, m
+// (Uetliberg tower tip includes the hill: ~1055 m a.s.l. vs ~410 m in the city).
+const LANDMARKS = [
+  { name: 'Prime Tower',        lon: 8.51765, lat: 47.38647, h: 126 },
+  { name: 'Uetliberg TV tower', lon: 8.49026, lat: 47.34946, h: 620 },
+  { name: 'Grossmünster',       lon: 8.54402, lat: 47.37039, h: 55 },
+  { name: 'Fraumünster spire',  lon: 8.54127, lat: 47.36970, h: 70 },
+  { name: 'St. Peter clock',    lon: 8.54051, lat: 47.37079, h: 55 },
+  { name: 'Predigerkirche',     lon: 8.54453, lat: 47.37447, h: 90 },
+  { name: 'HB main hall',       lon: 8.54040, lat: 47.37786, h: 22 },
+  { name: 'Swissôtel Oerlikon', lon: 8.54446, lat: 47.41134, h: 60 },
+];
+
+const REFRESH_MS = 150 * 1000;         // 15 boards per cycle — stay inside API rate limits
 const LEG_LENGTH_FUDGE = 1.25;         // straight-line -> track-length estimate for legs
                                        // extending beyond the tunnel
 const DEFAULT_POS = { lat: 47.37770, lon: 8.54385 };  // Central, Zurich — fallback/desktop
@@ -122,6 +138,11 @@ function stopTime(p, kind) { // kind: 'departure' | 'arrival'
   return ts ? ts * 1000 : null;
 }
 
+function schedTime(p, kind) { // scheduled time, ignoring delay prognosis — stable across polls
+  const ts = p[kind + 'Timestamp'];
+  return ts ? ts * 1000 : null;
+}
+
 function nameMatches(name, list) {
   return !!name && list.some(x => name.startsWith(x));
 }
@@ -135,58 +156,70 @@ function lineBadge(j) {
   return cat || (j.name || '?');
 }
 
+async function fetchBoard(query, limit, type, found) {
+  const url = 'https://transport.opendata.ch/v1/stationboard?station=' +
+    encodeURIComponent(query) + '&limit=' + limit + '&type=' + type;
+  const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+  const data = await res.json();
+  const boardStation = data.station && data.station.name;
+  const boardCoord = data.station && data.station.coordinate;
+  for (const j of (data.stationboard || [])) {
+    // The queried station's own passList entry has null name/coordinate.
+    // Stations the train passes WITHOUT stopping appear with null times — drop
+    // them, so the timed stops around them still form an adjacent pair (their
+    // extra track length is covered by the LEG_LENGTH_FUDGE estimate).
+    const stops = (j.passList || []).map(p => ({
+      name: (p.station && p.station.name) || boardStation,
+      coord: (p.station && p.station.name ? p.station.coordinate : boardCoord), // x = lat, y = lon
+      dep: stopTime(p, 'departure'),
+      arr: stopTime(p, 'arrival'),
+      schedDep: schedTime(p, 'departure'),
+    })).filter(s => s.dep || s.arr);
+    for (let i = 0; i + 1 < stops.length; i++) {
+      const s1 = stops[i], s2 = stops[i + 1];
+      if (!s1.dep || !s2.arr || s2.arr <= s1.dep) continue;
+      for (const [cname, c] of Object.entries(CORRIDORS)) {
+        let dir = null;
+        if (nameMatches(s1.name, c.A) && nameMatches(s2.name, c.B)) dir = 'AB';
+        else if (nameMatches(s1.name, c.B) && nameMatches(s2.name, c.A)) dir = 'BA';
+        if (!dir) continue;
+        let legLen = c.length;
+        if (s1.coord && s2.coord &&
+            typeof s1.coord.x === 'number' && typeof s2.coord.x === 'number' &&
+            typeof s1.coord.y === 'number' && typeof s2.coord.y === 'number') {
+          const straight = geoDist([s1.coord.y, s1.coord.x], [s2.coord.y, s2.coord.x]);
+          if (isFinite(straight) && straight < 60000) {
+            legLen = Math.max(c.length, straight * LEG_LENGTH_FUDGE);
+          }
+        }
+        // key from the SCHEDULED departure so a changing delay prognosis
+        // updates the existing train instead of duplicating it
+        const key = [lineBadge(j), j.to, cname, dir,
+                     Math.round((s1.schedDep || s1.dep) / 60000)].join('|');
+        found.set(key, {
+          key, badge: lineBadge(j), to: j.to, corridor: cname, dir,
+          dep: s1.dep, arr: s2.arr, legLen,
+          fromName: s1.name, toName: s2.name,
+        });
+      }
+    }
+  }
+}
+
 async function fetchBoards() {
   console.log('[fetchBoards] start', new Date().toISOString());
   // Boards only list FUTURE departures: a train disappears from the HB board the
   // moment it leaves HB and enters the tunnel. So legs are captured in advance,
-  // merged into `trains`, and kept until they expire.
+  // merged into `trains`, and kept until they expire. That cache is empty on
+  // startup, though — so while it is, also poll ARRIVAL boards, whose passLists
+  // include the (past) departure times of trains already en route.
   const found = new Map();
-  await Promise.all(BOARDS.map(async b => {
-    try {
-      const url = 'https://transport.opendata.ch/v1/stationboard?station=' +
-        encodeURIComponent(b.query) + '&limit=' + b.limit;
-      const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
-      const data = await res.json();
-      const boardStation = data.station && data.station.name;
-      const boardCoord = data.station && data.station.coordinate;
-      for (const j of (data.stationboard || [])) {
-        // the queried station's own passList entry has null name/coordinate
-        const stops = (j.passList || []).map(p => ({
-          name: (p.station && p.station.name) || boardStation,
-          coord: (p.station && p.station.name ? p.station.coordinate : boardCoord), // x = lat, y = lon
-          dep: stopTime(p, 'departure'),
-          arr: stopTime(p, 'arrival'),
-        }));
-        for (let i = 0; i + 1 < stops.length; i++) {
-          const s1 = stops[i], s2 = stops[i + 1];
-          if (!s1.dep || !s2.arr || s2.arr <= s1.dep) continue;
-          for (const [cname, c] of Object.entries(CORRIDORS)) {
-            let dir = null;
-            if (nameMatches(s1.name, c.A) && nameMatches(s2.name, c.B)) dir = 'AB';
-            else if (nameMatches(s1.name, c.B) && nameMatches(s2.name, c.A)) dir = 'BA';
-            if (!dir) continue;
-            let legLen = c.length;
-            if (s1.coord && s2.coord &&
-                typeof s1.coord.x === 'number' && typeof s2.coord.x === 'number' &&
-                typeof s1.coord.y === 'number' && typeof s2.coord.y === 'number') {
-              const straight = geoDist([s1.coord.y, s1.coord.x], [s2.coord.y, s2.coord.x]);
-              if (isFinite(straight) && straight < 60000) {
-                legLen = Math.max(c.length, straight * LEG_LENGTH_FUDGE);
-              }
-            }
-            const key = [lineBadge(j), j.to, cname, dir, Math.round(s1.dep / 60000)].join('|');
-            found.set(key, {
-              key, badge: lineBadge(j), to: j.to, corridor: cname, dir,
-              dep: s1.dep, arr: s2.arr, legLen,
-              fromName: s1.name, toName: s2.name,
-            });
-          }
-        }
-      }
-    } catch (e) {
-      fetchError = e.message || String(e);
-    }
-  }));
+  const jobs = [];
+  for (const b of BOARDS) jobs.push(['departure', b]);
+  if (!trains.size) for (const b of BOARDS) jobs.push(['arrival', b]);
+  await Promise.all(jobs.map(([type, b]) =>
+    fetchBoard(b.query, b.limit, type, found)
+      .catch(e => { fetchError = e.message || String(e); })));
   const now = Date.now();
   for (const [k, v] of found) trains.set(k, v);       // add/refresh (updates prognosis)
   for (const [k, v] of trains) {
@@ -379,9 +412,32 @@ function buildARScene() {
       new THREE.BufferGeometry().setFromPoints(pts),
       new THREE.LineBasicMaterial({ color: 0x666666, transparent: true, opacity: 0.3, depthTest: false })));
   }
+  buildLandmarks();
 }
 
-function makeLabelSprite(text, color) {
+// landmark pillars: faint reference columns, highlighted while aligning
+const landmarkMeshes = new Map();  // name -> {pillar, label}
+function buildLandmarks() {
+  for (const lm of LANDMARKS) {
+    const e = toENU(lm.lon, lm.lat);
+    const g = new THREE.Group();
+    g.position.set(e.x, 0, e.z);
+    const pillar = new THREE.Mesh(
+      new THREE.CylinderGeometry(2.5, 2.5, lm.h, 8),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.12, depthTest: false }));
+    pillar.position.y = lm.h / 2;
+    pillar.renderOrder = 2;
+    g.add(pillar);
+    const label = makeLabelSprite(lm.name, '#ffffff', 2);
+    label.position.y = lm.h + 25;
+    label.visible = false;   // only shown while aligning
+    g.add(label);
+    scene.add(g);
+    landmarkMeshes.set(lm.name, { pillar, label });
+  }
+}
+
+function makeLabelSprite(text, color, scale = 1) {
   const cv = document.createElement('canvas');
   cv.width = 512; cv.height = 128;
   const cx = cv.getContext('2d');
@@ -393,7 +449,7 @@ function makeLabelSprite(text, color) {
   cx.fillText(text.slice(0, 20), 24, 66);
   const sp = new THREE.Sprite(new THREE.SpriteMaterial({
     map: new THREE.CanvasTexture(cv), transparent: true, depthTest: false }));
-  sp.scale.set(60, 15, 1);
+  sp.scale.set(60 * scale, 15 * scale, 1);
   sp.renderOrder = 5;
   return sp;
 }
@@ -521,10 +577,82 @@ async function startAR() {
   setTimeout(() => hint.style.opacity = 0, 6000);
 }
 
+// ----------------------------------------------- landmark alignment mode ----
+// Point the crosshair at a known landmark and confirm: the compass error is
+// then exactly (current camera bearing − true bearing to the landmark), and is
+// folded into yawOffset. No more swiping around to find the right heading.
+
+let alignMode = false, alignTargets = [], alignIdx = 0;
+
+function cameraBearing() {  // cw from north, radians
+  const d = new THREE.Vector3();
+  camera.getWorldDirection(d);
+  return Math.atan2(d.x, -d.z);
+}
+
+function bearingToLandmark(lm) {  // cw from north, radians
+  return Math.atan2((lm.lon - userPos.lon) * mPerDegLon(userPos.lat),
+                    (lm.lat - userPos.lat) * M_PER_DEG_LAT);
+}
+
+function normAngle(a) { return Math.atan2(Math.sin(a), Math.cos(a)); }
+
+function setAlignHighlight() {
+  const sel = alignTargets[alignIdx];
+  for (const [name, m] of landmarkMeshes) {
+    const isSel = sel && name === sel.lm.name;
+    m.label.visible = alignMode;
+    m.label.material.opacity = isSel ? 1 : 0.35;
+    m.pillar.material.color.set(isSel ? 0x4dd2ff : 0xffffff);
+    m.pillar.material.opacity = isSel ? 0.55 : 0.12;
+  }
+}
+
+function enterAlign() {
+  if (!arBuilt) return;
+  alignTargets = LANDMARKS
+    .map(lm => ({ lm, d: geoDist([lm.lon, lm.lat], [userPos.lon, userPos.lat]) }))
+    .filter(t => t.d > 60)   // too close: bearing is meaningless
+    .sort((a, b) => a.d - b.d)
+    .slice(0, 6);
+  if (!alignTargets.length) return;
+  alignIdx = 0;
+  alignMode = true;
+  $('align-ui').style.display = 'block';
+  trainlistEl.style.display = 'none';
+  setAlignHighlight();
+  updateAlignHint();
+}
+
+function exitAlign() {
+  alignMode = false;
+  $('align-ui').style.display = 'none';
+  trainlistEl.style.display = '';
+  setAlignHighlight();
+}
+
+function updateAlignHint() {
+  const t = alignTargets[alignIdx];
+  if (!t) return;
+  const distTxt = t.d < 1000 ? Math.round(t.d) + ' m' : (t.d / 1000).toFixed(1) + ' km';
+  const delta = normAngle(bearingToLandmark(t.lm) - cameraBearing());
+  const deg = Math.round(Math.abs(delta) * 180 / Math.PI);
+  const turn = deg < 4 ? '✓ centered — tap “aligned”'
+    : delta < 0 ? `◀ turn left ${deg}°` : `turn right ${deg}° ▶`;
+  $('align-text').innerHTML =
+    `Center <b>${t.lm.name}</b> (${distTxt}) in the crosshair<br>${turn}`;
+}
+
+function confirmAlign() {
+  const t = alignTargets[alignIdx];
+  if (t) yawOffset += cameraBearing() - bearingToLandmark(t.lm);
+  exitAlign();
+}
+
 // drag: with sensors -> calibrate yaw; without -> free look
 let dragLast = null;
 addEventListener('pointerdown', e => {
-  if (mode !== 'ar' || e.target.closest('#controls')) return;
+  if (mode !== 'ar' || e.target.closest('#controls') || e.target.closest('#align-panel')) return;
   dragLast = { x: e.clientX, y: e.clientY };
 });
 addEventListener('pointermove', e => {
@@ -601,6 +729,8 @@ function setMode(m) {
   radarEl.style.display = m === 'ar' ? 'block' : 'none';
   $('btn-ar').classList.toggle('active', m === 'ar');
   $('btn-map').classList.toggle('active', m === 'map');
+  $('btn-align').style.display = m === 'ar' ? '' : 'none';
+  if (m !== 'ar' && alignMode) exitAlign();
   if (m === 'map') { initMap(); setTimeout(() => map.invalidateSize(), 50); }
 }
 
@@ -612,11 +742,15 @@ function startGPS() {
     { enableHighAccuracy: true, maximumAge: 2000 });
 }
 
-let lastListRender = 0;
+let lastListRender = 0, lastAlignHint = 0;
 function frame(now) {
   const list = activeTrains(Date.now());
   if (mode === 'map' && map) updateMap(list);
   if (mode === 'ar' && arBuilt) { updateAR(list, now); drawRadar(list); }
+  if (alignMode && now - lastAlignHint > 250) {
+    lastAlignHint = now;
+    updateAlignHint();
+  }
   if (now - lastListRender > 1000) {
     lastListRender = now;
     renderTrainList(list);
@@ -637,6 +771,10 @@ $('btn-start-map').onclick = () => {
 };
 $('btn-ar').onclick = () => { if (!arBuilt) { buildARScene(); } setMode('ar'); };
 $('btn-map').onclick = () => setMode('map');
+$('btn-align').onclick = () => alignMode ? exitAlign() : enterAlign();
+$('align-next').onclick = () => { alignIdx = (alignIdx + 1) % alignTargets.length; setAlignHighlight(); updateAlignHint(); };
+$('align-done').onclick = confirmAlign;
+$('align-cancel').onclick = exitAlign;
 
 // Desktop (no touch): AR adds nothing — go straight to the map
 const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;

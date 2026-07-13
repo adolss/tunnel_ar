@@ -52,6 +52,21 @@
   #calib-hint { position: fixed; top: 40%; left: 0; right: 0; text-align: center; font-size: 13px;
     opacity: 0; transition: opacity .4s; pointer-events: none; z-index: 1001;
     text-shadow: 0 1px 4px #000; }
+
+  #align-ui { display: none; position: fixed; inset: 0; z-index: 1002; pointer-events: none; }
+  #align-crosshair { position: absolute; top: 50%; left: 50%; width: 58px; height: 58px;
+    margin: -29px 0 0 -29px; border: 2px solid var(--accent); border-radius: 50%;
+    box-shadow: 0 0 12px rgba(77,210,255,.6), inset 0 0 12px rgba(77,210,255,.3); }
+  #align-crosshair::before, #align-crosshair::after { content: ''; position: absolute;
+    background: var(--accent); }
+  #align-crosshair::before { left: 50%; top: -12px; bottom: -12px; width: 1px; }
+  #align-crosshair::after { top: 50%; left: -12px; right: -12px; height: 1px; }
+  #align-panel { position: absolute; bottom: calc(env(safe-area-inset-bottom, 0px) + 64px);
+    left: 12px; right: 12px; pointer-events: auto; background: rgba(0,10,20,.8);
+    border: 1px solid rgba(77,210,255,.4); border-radius: 14px; padding: 12px;
+    backdrop-filter: blur(8px); text-align: center; }
+  #align-text { font-size: 14px; line-height: 1.5; margin-bottom: 10px; }
+  #align-panel .align-btns { display: flex; gap: 8px; justify-content: center; }
 </style>
 </head>
 <body>
@@ -64,11 +79,24 @@
     <canvas id="radar" width="260" height="260"></canvas>
   </div>
 
-  <div id="calib-hint">swipe left/right to align the compass &nbsp;·&nbsp; ⇕ swipe to tilt</div>
+  <div id="calib-hint">tap 🎯 Align and point at a landmark to calibrate the compass<br>(swipe to fine-tune)</div>
   <div id="trainlist"></div>
+
+  <div id="align-ui">
+    <div id="align-crosshair"></div>
+    <div id="align-panel">
+      <div id="align-text">…</div>
+      <div class="align-btns">
+        <button class="ctl" id="align-next">↻ other landmark</button>
+        <button class="ctl active" id="align-done">✓ aligned</button>
+        <button class="ctl" id="align-cancel">✕</button>
+      </div>
+    </div>
+  </div>
 
   <div id="controls">
     <button class="ctl" id="btn-ar">AR</button>
+    <button class="ctl" id="btn-align" style="display:none">🎯 Align</button>
     <button class="ctl active" id="btn-map">Map</button>
   </div>
 
