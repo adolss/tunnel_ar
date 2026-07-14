@@ -4,7 +4,8 @@ const puppeteer = require('puppeteer-core');
 
 (async () => {
   const browser = await puppeteer.launch({
-    executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    executablePath: process.env.CHROME_PATH ||
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     headless: 'new',
     args: ['--window-size=900,900', '--use-fake-ui-for-media-stream'],
   });

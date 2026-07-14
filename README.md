@@ -24,10 +24,16 @@ tram traffic move through the tunnels beneath you — live.
     Ueberlandpark ↔ Schwamendingerplatz, trams 7 and 9)
   plus all other rail tunnels in the area as faint context lines.
 - **Live trains** come from [transport.opendata.ch](https://transport.opendata.ch)
-  station boards (14 stations around the corridors), including delay prognosis.
-  There is no GPS feed for trains in tunnels, so positions are interpolated
-  along the corridor centerline between the timed stops, with accelerate/brake
-  easing. Typically accurate to a handful of seconds.
+  station boards (15 stations around the corridors, including the separate
+  `Zürich HB SZU` deep station), including delay prognosis. Stations a train
+  passes *without* stopping (e.g. an IC through Oerlikon) appear in the API
+  with empty times and are skipped, so those trains are tracked too. While the
+  leg cache is empty (first load), arrival boards are polled as well — they
+  list trains already inside the tunnels, so the view is populated immediately
+  instead of only after the next departures. There is no GPS feed for trains
+  in tunnels, so positions are interpolated along the corridor centerline
+  between the timed stops, with accelerate/brake easing. Typically accurate to
+  a handful of seconds.
 - **AR view**: camera passthrough + WebGL overlay driven by GPS and the compass.
   Tunnels are drawn as glowing tubes at approximate depth, trains as moving
   blocks with a beacon line and a pulsing ring at street level, plus a north-up
@@ -51,9 +57,11 @@ Netlify, …) — there is no backend.
 ## Using AR mode
 
 - Stand anywhere between HB, Central and Stadelhofen for the densest traffic.
-- The phone compass is often 10–30° off: **swipe horizontally** to rotate the
-  scene until the tunnel tubes line up with reality (e.g. the Hirschengraben
-  tube should run under the Limmat towards Stadelhofen).
+- The phone compass is often 10–30° off. Tap **🎯 Align**, point the crosshair
+  at the suggested landmark (Grossmünster, Prime Tower, the Uetliberg TV tower,
+  … — the on-screen arrow tells you how far to turn) and confirm: the compass
+  error is measured against the landmark's true bearing and corrected in one
+  tap. Swiping horizontally still works for fine-tuning.
 - The radar (top right) shows tunnels and trains within ~700 m, north-up, with
   your view direction as a bright wedge.
 
@@ -73,6 +81,8 @@ lines, operator-filtered subgraph for the SZU).
   their leg length estimated from straight-line distance × 1.25.
 - The stationboard API is polled every 150 s (rate limits); animation between
   polls is timetable-driven.
+- Landmark heights for the aligner are rough estimates above local street
+  level — only the *bearing* matters for calibration, so that's fine.
 
 ## Data licences
 
