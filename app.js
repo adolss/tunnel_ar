@@ -574,7 +574,7 @@ async function startAR() {
 
   const hint = $('calib-hint');
   hint.style.opacity = 1;
-  setTimeout(() => hint.style.opacity = 0, 6000);
+  setTimeout(() => hint.style.opacity = 0, 12000);
 }
 
 // ----------------------------------------------- landmark alignment mode ----

@@ -111,7 +111,10 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="tunnels.js"></script>
-<script src="app.js"></script>
+<!-- version query busts stale caches: index.html and app.js are cached
+     independently (GitHub Pages / Safari), and a new HTML with an old JS
+     silently breaks features. Bump on every release. -->
+<script src="tunnels.js?v=2"></script>
+<script src="app.js?v=2"></script>
 </body>
 </html>
