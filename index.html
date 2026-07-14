@@ -53,6 +53,13 @@
     opacity: 0; transition: opacity .4s; pointer-events: none; z-index: 1001;
     text-shadow: 0 1px 4px #000; }
 
+  #sensor-banner { display: none; position: fixed; top: calc(env(safe-area-inset-top, 0px) + 64px);
+    left: 12px; right: 12px; z-index: 1003; background: rgba(60,20,10,.92);
+    border: 1px solid #ff6b6b; border-radius: 12px; padding: 12px;
+    font-size: 13px; line-height: 1.55; text-align: center; backdrop-filter: blur(8px); }
+  #sensor-banner button { margin-top: 8px; background: #ff6b6b; border-color: #ff6b6b;
+    color: #200; font-weight: 600; }
+
   #align-ui { display: none; position: fixed; inset: 0; z-index: 1002; pointer-events: none; }
   #align-crosshair { position: absolute; top: 50%; left: 50%; width: 58px; height: 58px;
     margin: -29px 0 0 -29px; border: 2px solid var(--accent); border-radius: 50%;
@@ -80,6 +87,15 @@
   </div>
 
   <div id="calib-hint">glowing tubes = tunnels, moving blocks = live trains<br>if they don't line up with reality, tap 🎯 Align</div>
+
+  <div id="sensor-banner">
+    ⚠️ <b>No motion data</b> — the view can't follow your phone
+    (that's why dragging works: it's the fallback).<br>
+    Tap <b>Enable motion</b> and allow the prompt. If no prompt appears, motion
+    was denied earlier: iPhone — <b>ᴀA</b> in the address bar → Website Settings
+    (or Settings → Safari → Motion &amp; Orientation Access), allow it, then reload.<br>
+    <button class="ctl" id="btn-sensor-retry">Enable motion</button>
+  </div>
   <div id="trainlist"></div>
 
   <div id="align-ui">
@@ -114,7 +130,7 @@
 <!-- version query busts stale caches: index.html and app.js are cached
      independently (GitHub Pages / Safari), and a new HTML with an old JS
      silently breaks features. Bump on every release. -->
-<script src="tunnels.js?v=5"></script>
-<script src="app.js?v=5"></script>
+<script src="tunnels.js?v=6"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>

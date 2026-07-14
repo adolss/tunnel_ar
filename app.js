@@ -620,17 +620,37 @@ function onOrientationAbs(e) { // 'deviceorientationabsolute': Android compass
   feedAutoRef(e.alpha, undefined, 'compass (abs)');
 }
 
-async function startAR() {
-  // sensors (iOS needs explicit permission from a user gesture)
+// sensors (iOS needs explicit permission from a user gesture — and a past
+// "Don't Allow" is remembered, silently landing users in drag-fallback mode)
+let sensorListenersOn = false;
+async function initSensors() {
   try {
     if (typeof DeviceOrientationEvent !== 'undefined' &&
         typeof DeviceOrientationEvent.requestPermission === 'function') {
       const r = await DeviceOrientationEvent.requestPermission();
       if (r !== 'granted') throw new Error('denied');
     }
-    window.addEventListener('deviceorientationabsolute', onOrientationAbs);
-    window.addEventListener('deviceorientation', onOrientationRel);
-  } catch (e) { headingSource = 'mouse/drag'; }
+    if (!sensorListenersOn) {
+      sensorListenersOn = true;
+      window.addEventListener('deviceorientationabsolute', onOrientationAbs);
+      window.addEventListener('deviceorientation', onOrientationRel);
+    }
+    return true;
+  } catch (e) {
+    headingSource = 'mouse/drag';
+    return false;
+  }
+}
+
+// On a touch device with no motion data, AR cannot follow the phone — say so
+// loudly instead of silently degrading to drag-the-world-with-a-finger.
+function checkSensorBanner() {
+  $('sensor-banner').style.display =
+    (mode === 'ar' && isTouch && !hasSensors) ? 'block' : 'none';
+}
+
+async function startAR() {
+  await initSensors();
 
   // camera
   try {
@@ -842,6 +862,7 @@ function frame(now) {
     lastListRender = now;
     renderTrainList(list);
     setStatus();
+    checkSensorBanner();
   }
   requestAnimationFrame(frame);
 }
@@ -859,6 +880,10 @@ $('btn-start-map').onclick = () => {
 $('btn-ar').onclick = () => { if (!arBuilt) { buildARScene(); } setMode('ar'); };
 $('btn-map').onclick = () => setMode('map');
 $('btn-align').onclick = () => alignMode ? exitAlign() : enterAlign();
+$('btn-sensor-retry').onclick = async () => {   // button tap = fresh user gesture
+  await initSensors();
+  checkSensorBanner();
+};
 $('align-next').onclick = () => { alignIdx = (alignIdx + 1) % alignTargets.length; setAlignHighlight(); updateAlignHint(); };
 $('align-done').onclick = confirmAlign;
 $('align-cancel').onclick = exitAlign;
