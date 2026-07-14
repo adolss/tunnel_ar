@@ -270,7 +270,9 @@ function setStatus() {
   const data = fetchError
     ? `<span class="err">data error: ${fetchError}</span>`
     : age === null ? 'loading trains…' : `data ${age}s old`;
-  statusEl.innerHTML = `${gps} · heading: ${headingSource}<br>${data}`;
+  const view = (arBuilt && camera)
+    ? ` · view ${(Math.round(cameraBearing() * 180 / Math.PI) + 360) % 360}°` : '';
+  statusEl.innerHTML = `${gps} · heading: ${headingSource}${view}<br>${data}`;
 }
 
 function renderTrainList(list) {
@@ -500,6 +502,7 @@ function updateAR(list, now) {
     if (!seen.has(k)) { scene.remove(m); trainMeshes.delete(k); }
   }
   // camera
+  if (!isFinite(yawOffset)) yawOffset = 0;   // a NaN here would blank the scene
   const ue = toENU(userPos.lon, userPos.lat);
   camera.position.set(ue.x, 0, ue.z);
   if (deviceQuat) {
@@ -542,36 +545,35 @@ function screenAngle() {
 // alignment (or swipe) replaces that reference and freezes it for good.
 // Feeding the compass into the camera continuously — what this used to do —
 // makes the whole scene swim/drag whenever the phone rotates.
-let userAligned = false, autoRefDone = false, lastRelEvent = 0;
-const _autoSamples = [];
-const _fwd = new THREE.Vector3();
+let userAligned = false, autoRefInit = false, lastRelEvent = 0, lastRelAlpha = null;
 
-function quatBearing(q) { // forward bearing of an orientation, cw from north
-  _fwd.set(0, 0, -1).applyQuaternion(q);
-  return Math.atan2(_fwd.x, -_fwd.z);
-}
-
-function feedAutoRef(qAbs, label) {
-  if (userAligned || autoRefDone || !deviceQuat) return;
+// Complementary filter for the north reference. Both the relative and the
+// absolute orientation are world-vertical (alpha) rotations on top of the same
+// beta/gamma attitude, so the yaw between them is simply the alpha difference —
+// valid at ANY pitch (a bearing comparison degenerates when the camera points
+// at the ground, which this app encourages). The first plausible compass
+// sample snaps the reference so the view starts roughly right; after that it
+// is steered slowly (~4 s time constant at 60 Hz), so a cold uncalibrated
+// compass at startup self-corrects instead of freezing a wrong reference, and
+// wobble during rotation barely registers. A manual alignment stops it for good.
+function feedAutoRef(absAlphaDeg, accuracyDeg, label) {
+  if (userAligned || lastRelAlpha === null) return;
+  if (typeof accuracyDeg === 'number' && (accuracyDeg < 0 || accuracyDeg > 50)) return;
   headingSource = label;
-  _autoSamples.push(normAngle(quatBearing(deviceQuat) - quatBearing(qAbs)));
-  if (_autoSamples.length >= 20) {
-    let sx = 0, sy = 0;
-    for (const a of _autoSamples) { sx += Math.cos(a); sy += Math.sin(a); }
-    yawOffset = Math.atan2(sy, sx);   // circular mean of the sampled offsets
-    autoRefDone = true;
-  }
+  const target = (absAlphaDeg - lastRelAlpha) * Math.PI / 180;
+  if (!autoRefInit) { autoRefInit = true; yawOffset = normAngle(target); return; }
+  yawOffset = normAngle(yawOffset + normAngle(target - yawOffset) * 0.004);
 }
 
 function onOrientationRel(e) { // 'deviceorientation': relative on modern phones
   if (e.alpha === null && e.webkitCompassHeading === undefined) return;
   hasSensors = true;
   lastRelEvent = performance.now();
-  deviceQuat = orientationToQuat(e.alpha || 0, e.beta || 0, e.gamma || 0, screenAngle());
+  lastRelAlpha = e.alpha || 0;
+  deviceQuat = orientationToQuat(lastRelAlpha, e.beta || 0, e.gamma || 0, screenAngle());
   if (typeof e.webkitCompassHeading === 'number' && !isNaN(e.webkitCompassHeading)) {
-    feedAutoRef(orientationToQuat(360 - e.webkitCompassHeading, e.beta || 0, e.gamma || 0,
-                                  screenAngle()), 'compass (iOS)');
-  } else if (!autoRefDone && !userAligned) {
+    feedAutoRef(360 - e.webkitCompassHeading, e.webkitCompassAccuracy, 'compass (iOS)');
+  } else if (!autoRefInit && !userAligned) {
     headingSource = 'gyro — tap 🎯 Align';
   }
 }
@@ -579,10 +581,12 @@ function onOrientationRel(e) { // 'deviceorientation': relative on modern phones
 function onOrientationAbs(e) { // 'deviceorientationabsolute': Android compass
   if (e.alpha === null) return;
   hasSensors = true;
-  const qAbs = orientationToQuat(e.alpha, e.beta || 0, e.gamma || 0, screenAngle());
-  // no relative stream on this device (no gyro): track with the compass itself
-  if (performance.now() - lastRelEvent > 1000) deviceQuat = qAbs;
-  feedAutoRef(qAbs, 'compass (abs)');
+  if (performance.now() - lastRelEvent > 1000) {
+    // no relative stream on this device (no gyro): track with the compass itself
+    lastRelAlpha = e.alpha;
+    deviceQuat = orientationToQuat(e.alpha, e.beta || 0, e.gamma || 0, screenAngle());
+  }
+  feedAutoRef(e.alpha, undefined, 'compass (abs)');
 }
 
 async function startAR() {

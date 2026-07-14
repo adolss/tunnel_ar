@@ -58,8 +58,8 @@ Netlify, …) — there is no backend.
 
 - Stand anywhere between HB, Central and Stadelhofen for the densest traffic.
 - Orientation tracking is gyro-driven, so the scene stays locked to the world
-  while you turn. The compass is only sampled once at startup to find north —
-  and it's often 10–30° off. Tap **🎯 Align**, point the crosshair at the
+  while you turn. The compass only steers the north reference, slowly (a
+  complementary filter), and it's often 10–30° off anyway. Tap **🎯 Align**, point the crosshair at the
   suggested landmark (Grossmünster, Prime Tower, the Uetliberg TV tower, … —
   the on-screen arrow tells you how far to turn) and confirm: the heading
   error is measured against the landmark's true bearing and corrected in one
