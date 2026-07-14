@@ -262,6 +262,22 @@ let mode = null; // 'map' | 'ar'
 let userPos = { ...DEFAULT_POS, acc: null, real: false };
 let headingSource = '—';
 
+// GPS fixes jump 5–20 m between updates in the city; feeding them straight to
+// the camera makes the whole scene lurch. viewPos low-passes toward the fix
+// (τ ≈ 2 s) and only snaps on a genuine jump.
+let viewPos = null;
+function vp() { return viewPos || userPos; }
+function updateViewPos(dt) {
+  if (!viewPos ||
+      geoDist([viewPos.lon, viewPos.lat], [userPos.lon, userPos.lat]) > 75) {
+    viewPos = { lat: userPos.lat, lon: userPos.lon };
+    return;
+  }
+  const k = 1 - Math.exp(-dt / 2000);
+  viewPos.lat += (userPos.lat - viewPos.lat) * k;
+  viewPos.lon += (userPos.lon - viewPos.lon) * k;
+}
+
 function setStatus() {
   const age = lastFetch ? Math.round((Date.now() - lastFetch) / 1000) : null;
   const gps = userPos.real
@@ -503,7 +519,7 @@ function updateAR(list, now) {
   }
   // camera
   if (!isFinite(yawOffset)) yawOffset = 0;   // a NaN here would blank the scene
-  const ue = toENU(userPos.lon, userPos.lat);
+  const ue = toENU(vp().lon, vp().lat);
   camera.position.set(ue.x, 0, ue.z);
   if (deviceQuat) {
     camera.quaternion.copy(deviceQuat);
@@ -546,6 +562,8 @@ function screenAngle() {
 // Feeding the compass into the camera continuously — what this used to do —
 // makes the whole scene swim/drag whenever the phone rotates.
 let userAligned = false, autoRefInit = false, lastRelEvent = 0, lastRelAlpha = null;
+let compassYaw = null;    // low-passed compass-implied yawOffset
+let compassBias = 0;      // compass error measured by the user's 🎯 alignment
 
 // Complementary filter for the north reference. Both the relative and the
 // absolute orientation are world-vertical (alpha) rotations on top of the same
@@ -553,17 +571,30 @@ let userAligned = false, autoRefInit = false, lastRelEvent = 0, lastRelAlpha = n
 // valid at ANY pitch (a bearing comparison degenerates when the camera points
 // at the ground, which this app encourages). The first plausible compass
 // sample snaps the reference so the view starts roughly right; after that it
-// is steered slowly (~4 s time constant at 60 Hz), so a cold uncalibrated
-// compass at startup self-corrects instead of freezing a wrong reference, and
-// wobble during rotation barely registers. A manual alignment stops it for good.
+// is steered slowly, so a cold uncalibrated compass at startup self-corrects
+// and wobble during rotation barely registers. A 🎯 landmark alignment does
+// NOT stop the filter — it measures the compass's bias, and the filter keeps
+// correcting gyro DRIFT through that bias, extra slowly (~30 s time constant)
+// so short magnetic disturbances can't drag a good alignment around.
 function feedAutoRef(absAlphaDeg, accuracyDeg, label) {
-  if (userAligned || lastRelAlpha === null) return;
+  if (lastRelAlpha === null) return;
   if (typeof accuracyDeg === 'number' && (accuracyDeg < 0 || accuracyDeg > 50)) return;
-  headingSource = label;
-  const target = (absAlphaDeg - lastRelAlpha) * Math.PI / 180;
-  if (!autoRefInit) { autoRefInit = true; yawOffset = normAngle(target); return; }
-  yawOffset = normAngle(yawOffset + normAngle(target - yawOffset) * 0.004);
+  headingSource = label + (userAligned ? ' +🎯' : '');
+  const target = normAngle((absAlphaDeg - lastRelAlpha) * Math.PI / 180);
+  compassYaw = compassYaw === null ? target
+    : normAngle(compassYaw + normAngle(target - compassYaw) * 0.02);
+  const goal = normAngle(compassYaw - compassBias);
+  if (!autoRefInit) { autoRefInit = true; yawOffset = goal; return; }
+  const gain = userAligned ? 0.0005 : 0.004;   // τ ≈ 33 s / 4 s at 60 Hz
+  yawOffset = normAngle(yawOffset + normAngle(goal - yawOffset) * gain);
 }
+
+// iOS may reset the gyro's arbitrary zero while the tab is backgrounded:
+// re-seed the reference on return (compassBias survives — it is a property of
+// the compass vs. reality, not of the gyro zero).
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) { autoRefInit = false; compassYaw = null; }
+});
 
 function onOrientationRel(e) { // 'deviceorientation': relative on modern phones
   if (e.alpha === null && e.webkitCompassHeading === undefined) return;
@@ -634,9 +665,9 @@ function cameraBearing() {  // cw from north, radians
   return Math.atan2(d.x, -d.z);
 }
 
-function bearingToLandmark(lm) {  // cw from north, radians
-  return Math.atan2((lm.lon - userPos.lon) * mPerDegLon(userPos.lat),
-                    (lm.lat - userPos.lat) * M_PER_DEG_LAT);
+function bearingToLandmark(lm) {  // cw from north, radians, from the camera position
+  return Math.atan2((lm.lon - vp().lon) * mPerDegLon(vp().lat),
+                    (lm.lat - vp().lat) * M_PER_DEG_LAT);
 }
 
 function normAngle(a) { return Math.atan2(Math.sin(a), Math.cos(a)); }
@@ -655,7 +686,7 @@ function setAlignHighlight() {
 function enterAlign() {
   if (!arBuilt) return;
   alignTargets = LANDMARKS
-    .map(lm => ({ lm, d: geoDist([lm.lon, lm.lat], [userPos.lon, userPos.lat]) }))
+    .map(lm => ({ lm, d: geoDist([lm.lon, lm.lat], [vp().lon, vp().lat]) }))
     .filter(t => t.d > 60)   // too close: bearing is meaningless
     .sort((a, b) => a.d - b.d)
     .slice(0, 6);
@@ -690,9 +721,16 @@ function updateAlignHint() {
 function confirmAlign() {
   const t = alignTargets[alignIdx];
   if (t) {
-    yawOffset += cameraBearing() - bearingToLandmark(t.lm);
-    userAligned = true;   // user reference beats the compass from now on
+    yawOffset = normAngle(yawOffset + cameraBearing() - bearingToLandmark(t.lm));
+    userAligned = true;
+    // record how wrong the compass is, so the drift filter keeps honoring
+    // this alignment instead of pulling back toward the raw compass
+    if (compassYaw !== null) compassBias = normAngle(compassYaw - yawOffset);
     if (hasSensors) headingSource = 'landmark ✓';
+    const hint = $('calib-hint');
+    hint.innerHTML = '✓ aligned — tunnels are locked to the world';
+    hint.style.opacity = 1;
+    setTimeout(() => hint.style.opacity = 0, 3000);
   }
   exitAlign();
 }
@@ -732,7 +770,7 @@ function drawRadar(list) {
   ctx.save();
   ctx.translate(R, R);
   const sc = R / range;
-  const ue = toENU(userPos.lon, userPos.lat);
+  const ue = toENU(vp().lon, vp().lat);
   // fov wedge from camera heading
   if (camera) {
     const d = new THREE.Vector3();
@@ -789,8 +827,10 @@ function startGPS() {
     { enableHighAccuracy: true, maximumAge: 2000 });
 }
 
-let lastListRender = 0, lastAlignHint = 0;
+let lastListRender = 0, lastAlignHint = 0, lastFrameT = 0;
 function frame(now) {
+  updateViewPos(Math.min(100, now - lastFrameT));
+  lastFrameT = now;
   const list = activeTrains(Date.now());
   if (mode === 'map' && map) updateMap(list);
   if (mode === 'ar' && arBuilt) { updateAR(list, now); drawRadar(list); }
