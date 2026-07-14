@@ -697,23 +697,21 @@ function confirmAlign() {
   exitAlign();
 }
 
-// drag: with sensors -> calibrate yaw; without -> free look
+// drag: free look, desktop/no-sensor mode only. With live sensors the view is
+// entirely sensor-driven — heading errors are corrected via 🎯 Align, never by
+// dragging the world around (an accidental swipe used to mis-rotate the scene).
 let dragLast = null;
 addEventListener('pointerdown', e => {
-  if (mode !== 'ar' || e.target.closest('#controls') || e.target.closest('#align-panel')) return;
+  if (mode !== 'ar' || hasSensors ||
+      e.target.closest('#controls') || e.target.closest('#align-panel')) return;
   dragLast = { x: e.clientX, y: e.clientY };
 });
 addEventListener('pointermove', e => {
-  if (!dragLast || mode !== 'ar') return;
+  if (!dragLast || mode !== 'ar' || hasSensors) return;
   const dx = e.clientX - dragLast.x, dy = e.clientY - dragLast.y;
   dragLast = { x: e.clientX, y: e.clientY };
-  if (hasSensors) {
-    yawOffset += dx * 0.003;
-    userAligned = true;   // manual tweak: stop the compass from overriding it
-  } else {
-    mouseLook.yaw += dx * 0.005;
-    mouseLook.pitch = Math.max(-1.5, Math.min(1.5, mouseLook.pitch + dy * 0.005));
-  }
+  mouseLook.yaw += dx * 0.005;
+  mouseLook.pitch = Math.max(-1.5, Math.min(1.5, mouseLook.pitch + dy * 0.005));
 });
 addEventListener('pointerup', () => dragLast = null);
 

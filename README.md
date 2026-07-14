@@ -63,7 +63,8 @@ Netlify, …) — there is no backend.
   suggested landmark (Grossmünster, Prime Tower, the Uetliberg TV tower, … —
   the on-screen arrow tells you how far to turn) and confirm: the heading
   error is measured against the landmark's true bearing and corrected in one
-  tap, permanently for the session. Swiping horizontally still fine-tunes.
+  tap, permanently for the session. There is deliberately no way to drag the
+  scene by hand on the phone — the view is purely sensor-driven.
 - The radar (top right) shows tunnels and trains within ~700 m, north-up, with
   your view direction as a bright wedge.
 
