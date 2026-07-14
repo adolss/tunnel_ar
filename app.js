@@ -86,7 +86,7 @@ const REFRESH_MS = 150 * 1000;         // 15 boards per cycle — stay inside AP
 const LEG_LENGTH_FUDGE = 1.25;         // straight-line -> track-length estimate for legs
                                        // extending beyond the tunnel
 const DEFAULT_POS = { lat: 47.37770, lon: 8.54385 };  // Central, Zurich — fallback/desktop
-const APP_VERSION = 'v7';              // shown in the HUD — keep in sync with
+const APP_VERSION = 'v8';              // shown in the HUD — keep in sync with
                                        // the ?v= cache-buster in index.html
 
 // ------------------------------------------------------------- geo utils ---
@@ -667,17 +667,20 @@ function sensorBannerText(state) {
       'motion was denied earlier: <b>ᴀA</b> in the address bar → Website Settings ' +
       '(or Settings → Safari → Motion &amp; Orientation Access), allow it, then reload.';
   }
+  // Android cannot prompt for motion (no API for it) — mimic one: exact
+  // toggle path + a reload button for after flipping it.
   if (state === 'denied') {
-    return 'Chrome is <b>blocking motion sensors</b> for this site. Tap the icon left ' +
-      'of the address bar → Permissions → <b>Motion sensors</b> → Allow (or ⋮ → ' +
-      'Settings → Site settings → Motion sensors), then reload.';
+    return 'Chrome is <b>blocking motion sensors</b> for this site — and Android ' +
+      'offers no permission pop-up for them. Tap the icon left of the address bar ' +
+      '→ Permissions → <b>Motion sensors</b> → Allow (or ⋮ → Settings → ' +
+      'Site settings → Motion sensors), then tap Reload below.';
   }
   if (state === 'granted') {
-    return 'Sensors are allowed but no data is arriving — <b>reload the page</b>. ' +
+    return 'Sensors are allowed but no data is arriving — tap <b>Reload page</b>. ' +
       'If it persists, check ⋮ → Settings → Site settings → Motion sensors.';
   }
   return 'Allow motion sensors for the browser: ⋮ → Settings → Site settings → ' +
-    '<b>Motion sensors</b> → Allow, then reload.';
+    '<b>Motion sensors</b> → Allow, then tap Reload below.';
 }
 
 let sensorDiagDone = false;
@@ -928,6 +931,7 @@ $('btn-sensor-retry').onclick = async () => {   // button tap = fresh user gestu
   await initSensors();
   checkSensorBanner();
 };
+$('btn-sensor-reload').onclick = () => location.reload();
 $('align-next').onclick = () => { alignIdx = (alignIdx + 1) % alignTargets.length; setAlignHighlight(); updateAlignHint(); };
 $('align-done').onclick = confirmAlign;
 $('align-cancel').onclick = exitAlign;
