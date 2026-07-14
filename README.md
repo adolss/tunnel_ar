@@ -57,11 +57,13 @@ Netlify, …) — there is no backend.
 ## Using AR mode
 
 - Stand anywhere between HB, Central and Stadelhofen for the densest traffic.
-- The phone compass is often 10–30° off. Tap **🎯 Align**, point the crosshair
-  at the suggested landmark (Grossmünster, Prime Tower, the Uetliberg TV tower,
-  … — the on-screen arrow tells you how far to turn) and confirm: the compass
+- Orientation tracking is gyro-driven, so the scene stays locked to the world
+  while you turn. The compass is only sampled once at startup to find north —
+  and it's often 10–30° off. Tap **🎯 Align**, point the crosshair at the
+  suggested landmark (Grossmünster, Prime Tower, the Uetliberg TV tower, … —
+  the on-screen arrow tells you how far to turn) and confirm: the heading
   error is measured against the landmark's true bearing and corrected in one
-  tap. Swiping horizontally still works for fine-tuning.
+  tap, permanently for the session. Swiping horizontally still fine-tunes.
 - The radar (top right) shows tunnels and trains within ~700 m, north-up, with
   your view direction as a bright wedge.
 

@@ -531,18 +531,58 @@ function orientationToQuat(alphaDeg, betaDeg, gammaDeg, orientDeg) {
   return q;
 }
 
-function onOrientation(e) {
+function screenAngle() {
+  return (screen.orientation && screen.orientation.angle) || window.orientation || 0;
+}
+
+// Tracking strategy: the RELATIVE (gyro) orientation drives the camera — it is
+// smooth and world-locked, so the tunnels stay put while the phone turns. The
+// noisy magnetic compass is folded into yawOffset ONCE (averaged over its
+// first samples) just to establish where north is; a manual 🎯 landmark
+// alignment (or swipe) replaces that reference and freezes it for good.
+// Feeding the compass into the camera continuously — what this used to do —
+// makes the whole scene swim/drag whenever the phone rotates.
+let userAligned = false, autoRefDone = false, lastRelEvent = 0;
+const _autoSamples = [];
+const _fwd = new THREE.Vector3();
+
+function quatBearing(q) { // forward bearing of an orientation, cw from north
+  _fwd.set(0, 0, -1).applyQuaternion(q);
+  return Math.atan2(_fwd.x, -_fwd.z);
+}
+
+function feedAutoRef(qAbs, label) {
+  if (userAligned || autoRefDone || !deviceQuat) return;
+  headingSource = label;
+  _autoSamples.push(normAngle(quatBearing(deviceQuat) - quatBearing(qAbs)));
+  if (_autoSamples.length >= 20) {
+    let sx = 0, sy = 0;
+    for (const a of _autoSamples) { sx += Math.cos(a); sy += Math.sin(a); }
+    yawOffset = Math.atan2(sy, sx);   // circular mean of the sampled offsets
+    autoRefDone = true;
+  }
+}
+
+function onOrientationRel(e) { // 'deviceorientation': relative on modern phones
   if (e.alpha === null && e.webkitCompassHeading === undefined) return;
   hasSensors = true;
-  let alpha = e.alpha || 0;
+  lastRelEvent = performance.now();
+  deviceQuat = orientationToQuat(e.alpha || 0, e.beta || 0, e.gamma || 0, screenAngle());
   if (typeof e.webkitCompassHeading === 'number' && !isNaN(e.webkitCompassHeading)) {
-    alpha = 360 - e.webkitCompassHeading;   // iOS: use true compass heading
-    headingSource = 'compass (iOS)';
-  } else {
-    headingSource = e.absolute ? 'compass (abs)' : 'gyro (relative!)';
+    feedAutoRef(orientationToQuat(360 - e.webkitCompassHeading, e.beta || 0, e.gamma || 0,
+                                  screenAngle()), 'compass (iOS)');
+  } else if (!autoRefDone && !userAligned) {
+    headingSource = 'gyro — tap 🎯 Align';
   }
-  const orient = (screen.orientation && screen.orientation.angle) || window.orientation || 0;
-  deviceQuat = orientationToQuat(alpha, e.beta || 0, e.gamma || 0, orient);
+}
+
+function onOrientationAbs(e) { // 'deviceorientationabsolute': Android compass
+  if (e.alpha === null) return;
+  hasSensors = true;
+  const qAbs = orientationToQuat(e.alpha, e.beta || 0, e.gamma || 0, screenAngle());
+  // no relative stream on this device (no gyro): track with the compass itself
+  if (performance.now() - lastRelEvent > 1000) deviceQuat = qAbs;
+  feedAutoRef(qAbs, 'compass (abs)');
 }
 
 async function startAR() {
@@ -553,8 +593,8 @@ async function startAR() {
       const r = await DeviceOrientationEvent.requestPermission();
       if (r !== 'granted') throw new Error('denied');
     }
-    window.addEventListener('deviceorientationabsolute', onOrientation);
-    window.addEventListener('deviceorientation', onOrientation);
+    window.addEventListener('deviceorientationabsolute', onOrientationAbs);
+    window.addEventListener('deviceorientation', onOrientationRel);
   } catch (e) { headingSource = 'mouse/drag'; }
 
   // camera
@@ -645,7 +685,11 @@ function updateAlignHint() {
 
 function confirmAlign() {
   const t = alignTargets[alignIdx];
-  if (t) yawOffset += cameraBearing() - bearingToLandmark(t.lm);
+  if (t) {
+    yawOffset += cameraBearing() - bearingToLandmark(t.lm);
+    userAligned = true;   // user reference beats the compass from now on
+    if (hasSensors) headingSource = 'landmark ✓';
+  }
   exitAlign();
 }
 
@@ -661,6 +705,7 @@ addEventListener('pointermove', e => {
   dragLast = { x: e.clientX, y: e.clientY };
   if (hasSensors) {
     yawOffset += dx * 0.003;
+    userAligned = true;   // manual tweak: stop the compass from overriding it
   } else {
     mouseLook.yaw += dx * 0.005;
     mouseLook.pitch = Math.max(-1.5, Math.min(1.5, mouseLook.pitch + dy * 0.005));
