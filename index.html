@@ -91,9 +91,7 @@
   <div id="sensor-banner">
     ⚠️ <b>No motion data</b> — the view can't follow your phone
     (that's why dragging works: it's the fallback).<br>
-    Tap <b>Enable motion</b> and allow the prompt. If no prompt appears, motion
-    was denied earlier: iPhone — <b>ᴀA</b> in the address bar → Website Settings
-    (or Settings → Safari → Motion &amp; Orientation Access), allow it, then reload.<br>
+    <span id="sensor-text">Checking sensor permissions…</span><br>
     <button class="ctl" id="btn-sensor-retry">Enable motion</button>
   </div>
   <div id="trainlist"></div>
@@ -130,7 +128,7 @@
 <!-- version query busts stale caches: index.html and app.js are cached
      independently (GitHub Pages / Safari), and a new HTML with an old JS
      silently breaks features. Bump on every release. -->
-<script src="tunnels.js?v=6"></script>
-<script src="app.js?v=6"></script>
+<script src="tunnels.js?v=7"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>

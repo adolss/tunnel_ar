@@ -86,6 +86,8 @@ const REFRESH_MS = 150 * 1000;         // 15 boards per cycle — stay inside AP
 const LEG_LENGTH_FUDGE = 1.25;         // straight-line -> track-length estimate for legs
                                        // extending beyond the tunnel
 const DEFAULT_POS = { lat: 47.37770, lon: 8.54385 };  // Central, Zurich — fallback/desktop
+const APP_VERSION = 'v7';              // shown in the HUD — keep in sync with
+                                       // the ?v= cache-buster in index.html
 
 // ------------------------------------------------------------- geo utils ---
 
@@ -288,7 +290,7 @@ function setStatus() {
     : age === null ? 'loading trains…' : `data ${age}s old`;
   const view = (arBuilt && camera)
     ? ` · view ${(Math.round(cameraBearing() * 180 / Math.PI) + 360) % 360}°` : '';
-  statusEl.innerHTML = `${gps} · heading: ${headingSource}${view}<br>${data}`;
+  statusEl.innerHTML = `${gps} · heading: ${headingSource}${view}<br>${data} · ${APP_VERSION}`;
 }
 
 function renderTrainList(list) {
@@ -643,10 +645,52 @@ async function initSensors() {
 }
 
 // On a touch device with no motion data, AR cannot follow the phone — say so
-// loudly instead of silently degrading to drag-the-world-with-a-finger.
+// loudly instead of silently degrading to drag-the-world-with-a-finger, and
+// give platform-specific instructions (iOS: remembered permission denial;
+// Android: Chrome's "Motion sensors" site setting, whose state we can query).
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+
+async function sensorPermissionState() {
+  try {
+    const rs = await Promise.all(['accelerometer', 'gyroscope', 'magnetometer']
+      .map(n => navigator.permissions.query({ name: n }).catch(() => null)));
+    const states = rs.filter(Boolean).map(r => r.state);
+    if (states.includes('denied')) return 'denied';
+    if (states.length && states.every(s => s === 'granted')) return 'granted';
+  } catch (e) {}
+  return 'unknown';
+}
+
+function sensorBannerText(state) {
+  if (IS_IOS) {
+    return 'Tap <b>Enable motion</b> and allow the prompt. If no prompt appears, ' +
+      'motion was denied earlier: <b>ᴀA</b> in the address bar → Website Settings ' +
+      '(or Settings → Safari → Motion &amp; Orientation Access), allow it, then reload.';
+  }
+  if (state === 'denied') {
+    return 'Chrome is <b>blocking motion sensors</b> for this site. Tap the icon left ' +
+      'of the address bar → Permissions → <b>Motion sensors</b> → Allow (or ⋮ → ' +
+      'Settings → Site settings → Motion sensors), then reload.';
+  }
+  if (state === 'granted') {
+    return 'Sensors are allowed but no data is arriving — <b>reload the page</b>. ' +
+      'If it persists, check ⋮ → Settings → Site settings → Motion sensors.';
+  }
+  return 'Allow motion sensors for the browser: ⋮ → Settings → Site settings → ' +
+    '<b>Motion sensors</b> → Allow, then reload.';
+}
+
+let sensorDiagDone = false;
 function checkSensorBanner() {
-  $('sensor-banner').style.display =
-    (mode === 'ar' && isTouch && !hasSensors) ? 'block' : 'none';
+  const show = mode === 'ar' && isTouch && !hasSensors;
+  $('sensor-banner').style.display = show ? 'block' : 'none';
+  if (show && !sensorDiagDone) {
+    sensorDiagDone = true;
+    $('btn-sensor-retry').style.display = IS_IOS ? '' : 'none';
+    sensorPermissionState().then(state => {
+      $('sensor-text').innerHTML = sensorBannerText(state);
+    });
+  }
 }
 
 async function startAR() {
