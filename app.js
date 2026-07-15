@@ -86,8 +86,8 @@ const REFRESH_MS = 150 * 1000;         // 15 boards per cycle — stay inside AP
 const LEG_LENGTH_FUDGE = 1.25;         // straight-line -> track-length estimate for legs
                                        // extending beyond the tunnel
 const DEFAULT_POS = { lat: 47.37770, lon: 8.54385 };  // Central, Zurich — fallback/desktop
-const APP_VERSION = 'v9';              // shown in the HUD — keep in sync with
-const APP_VERSION_NUM = 9;             // the ?v= cache-buster in index.html
+const APP_VERSION = 'v10';              // shown in the HUD — keep in sync with
+const APP_VERSION_NUM = 10;             // the ?v= cache-buster in index.html
                                        // and with version.json
 
 // ------------------------------------------------------------- geo utils ---
@@ -656,19 +656,25 @@ function startGenericSensor() {
 // "Don't Allow" is remembered, silently landing users in drag-fallback mode)
 let sensorListenersOn = false;
 async function initSensors() {
+  // iOS: requestPermission shows the real motion prompt and a denial is final.
+  // Chrome ships the same API but it NEVER prompts — it only reports the
+  // current (global, tri-state) setting — so on Android a non-granted answer
+  // must not stop us from attaching listeners and starting the sensors anyway.
+  let permitted = true;
   try {
     if (typeof DeviceOrientationEvent !== 'undefined' &&
         typeof DeviceOrientationEvent.requestPermission === 'function') {
-      const r = await DeviceOrientationEvent.requestPermission();
-      if (r !== 'granted') throw new Error('denied');
+      const r = await DeviceOrientationEvent.requestPermission().catch(() => 'error');
+      permitted = r === 'granted';
+      if (IS_IOS && !permitted) throw new Error('denied');
     }
     if (!sensorListenersOn) {
       sensorListenersOn = true;
       window.addEventListener('deviceorientationabsolute', onOrientationAbs);
       window.addEventListener('deviceorientation', onOrientationRel);
     }
-    startGenericSensor();   // Android Chrome: this is what triggers the prompt
-    return true;
+    startGenericSensor();
+    return permitted;
   } catch (e) {
     headingSource = 'mouse/drag';
     return false;
@@ -699,20 +705,16 @@ function sensorBannerText(state) {
       'motion was denied earlier: <b>ᴀA</b> in the address bar → Website Settings ' +
       '(or Settings → Safari → Motion &amp; Orientation Access), allow it, then reload.';
   }
-  if (state === 'prompt') {
-    return 'Tap <b>Enable motion</b> below and allow Chrome\'s motion-sensor prompt.';
-  }
-  if (state === 'denied') {
-    return 'Motion sensors were <b>denied</b> for this site. Tap the icon left of ' +
-      'the address bar → Permissions → <b>Motion sensors</b> → Allow (or reset the ' +
-      'permission), then tap Reload below.';
-  }
+  // Android: motion sensors are ONE GLOBAL Chrome setting (Allow / Ask /
+  // Block) — there are no per-site permissions, and Chrome's "ask" mode does
+  // not actually show web pages a prompt. Point at the global switch.
+  const path = 'Chrome ⋮ → Settings → Site settings → <b>Motion sensors</b> → ' +
+    'set to <b>Allowed</b>, then tap Reload below.';
   if (state === 'granted') {
     return 'Sensors are allowed but no data is arriving — tap <b>Reload page</b>. ' +
-      'If it persists, check ⋮ → Settings → Site settings → Motion sensors.';
+      'If it persists: ' + path;
   }
-  return 'Tap <b>Enable motion</b> below; if nothing happens, check ⋮ → Settings → ' +
-    'Site settings → <b>Motion sensors</b>, then tap Reload.';
+  return 'Tap <b>Enable motion</b>; if the view still doesn\'t follow the phone: ' + path;
 }
 
 let sensorDiagDone = false;
@@ -959,8 +961,16 @@ $('btn-ar').onclick = () => { if (!arBuilt) { buildARScene(); } setMode('ar'); }
 $('btn-map').onclick = () => setMode('map');
 $('btn-align').onclick = () => alignMode ? exitAlign() : enterAlign();
 $('btn-sensor-retry').onclick = async () => {   // button tap = fresh user gesture
+  $('sensor-text').innerHTML = 'Requesting sensors…';
   await initSensors();
-  checkSensorBanner();
+  setTimeout(() => {                            // always give visible feedback
+    checkSensorBanner();
+    if (!hasSensors) {
+      sensorPermissionState().then(state => {
+        $('sensor-text').innerHTML = 'Still no sensor data. ' + sensorBannerText(state);
+      });
+    }
+  }, 1200);
 };
 $('btn-sensor-reload').onclick = () => location.reload();
 $('align-next').onclick = () => { alignIdx = (alignIdx + 1) % alignTargets.length; setAlignHighlight(); updateAlignHint(); };
