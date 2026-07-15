@@ -86,8 +86,9 @@ const REFRESH_MS = 150 * 1000;         // 15 boards per cycle — stay inside AP
 const LEG_LENGTH_FUDGE = 1.25;         // straight-line -> track-length estimate for legs
                                        // extending beyond the tunnel
 const DEFAULT_POS = { lat: 47.37770, lon: 8.54385 };  // Central, Zurich — fallback/desktop
-const APP_VERSION = 'v8';              // shown in the HUD — keep in sync with
-                                       // the ?v= cache-buster in index.html
+const APP_VERSION = 'v9';              // shown in the HUD — keep in sync with
+const APP_VERSION_NUM = 9;             // the ?v= cache-buster in index.html
+                                       // and with version.json
 
 // ------------------------------------------------------------- geo utils ---
 
@@ -622,6 +623,35 @@ function onOrientationAbs(e) { // 'deviceorientationabsolute': Android compass
   feedAutoRef(e.alpha, undefined, 'compass (abs)');
 }
 
+// Newer Android Chrome gates motion behind a permission that legacy
+// deviceorientation events cannot prompt for ("sites can ask to use motion
+// sensors") — but starting a Generic Sensor CAN trigger the prompt. It also
+// doubles as an absolute orientation source if the legacy events stay silent.
+let genSensor = null;
+function startGenericSensor() {
+  if (genSensor || typeof AbsoluteOrientationSensor !== 'function') return;
+  try {
+    const s = new AbsoluteOrientationSensor({ frequency: 30 });
+    s.addEventListener('error', () => { genSensor = null; });
+    s.addEventListener('reading', () => {
+      if (performance.now() - lastRelEvent < 1000) return; // legacy stream preferred
+      hasSensors = true;
+      // device→ENU quaternion to a three.js camera: remap the world frame
+      // (−90° about X: ENU up → three Y-up), then compensate screen rotation
+      const q = new THREE.Quaternion().fromArray(s.quaternion);
+      const out = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
+      out.multiply(q);
+      out.multiply(_q0.setFromAxisAngle(_zee, -THREE.MathUtils.degToRad(screenAngle())));
+      deviceQuat = out;
+      // orientation is already magnetometer-fused and absolute: no compass
+      // filter needed, yawOffset stays 0 until the user 🎯-aligns
+      if (!userAligned) headingSource = 'sensor (abs)';
+    });
+    s.start();
+    genSensor = s;
+  } catch (e) {}
+}
+
 // sensors (iOS needs explicit permission from a user gesture — and a past
 // "Don't Allow" is remembered, silently landing users in drag-fallback mode)
 let sensorListenersOn = false;
@@ -637,6 +667,7 @@ async function initSensors() {
       window.addEventListener('deviceorientationabsolute', onOrientationAbs);
       window.addEventListener('deviceorientation', onOrientationRel);
     }
+    startGenericSensor();   // Android Chrome: this is what triggers the prompt
     return true;
   } catch (e) {
     headingSource = 'mouse/drag';
@@ -656,6 +687,7 @@ async function sensorPermissionState() {
       .map(n => navigator.permissions.query({ name: n }).catch(() => null)));
     const states = rs.filter(Boolean).map(r => r.state);
     if (states.includes('denied')) return 'denied';
+    if (states.includes('prompt')) return 'prompt';
     if (states.length && states.every(s => s === 'granted')) return 'granted';
   } catch (e) {}
   return 'unknown';
@@ -667,20 +699,20 @@ function sensorBannerText(state) {
       'motion was denied earlier: <b>ᴀA</b> in the address bar → Website Settings ' +
       '(or Settings → Safari → Motion &amp; Orientation Access), allow it, then reload.';
   }
-  // Android cannot prompt for motion (no API for it) — mimic one: exact
-  // toggle path + a reload button for after flipping it.
+  if (state === 'prompt') {
+    return 'Tap <b>Enable motion</b> below and allow Chrome\'s motion-sensor prompt.';
+  }
   if (state === 'denied') {
-    return 'Chrome is <b>blocking motion sensors</b> for this site — and Android ' +
-      'offers no permission pop-up for them. Tap the icon left of the address bar ' +
-      '→ Permissions → <b>Motion sensors</b> → Allow (or ⋮ → Settings → ' +
-      'Site settings → Motion sensors), then tap Reload below.';
+    return 'Motion sensors were <b>denied</b> for this site. Tap the icon left of ' +
+      'the address bar → Permissions → <b>Motion sensors</b> → Allow (or reset the ' +
+      'permission), then tap Reload below.';
   }
   if (state === 'granted') {
     return 'Sensors are allowed but no data is arriving — tap <b>Reload page</b>. ' +
       'If it persists, check ⋮ → Settings → Site settings → Motion sensors.';
   }
-  return 'Allow motion sensors for the browser: ⋮ → Settings → Site settings → ' +
-    '<b>Motion sensors</b> → Allow, then tap Reload below.';
+  return 'Tap <b>Enable motion</b> below; if nothing happens, check ⋮ → Settings → ' +
+    'Site settings → <b>Motion sensors</b>, then tap Reload.';
 }
 
 let sensorDiagDone = false;
@@ -689,7 +721,6 @@ function checkSensorBanner() {
   $('sensor-banner').style.display = show ? 'block' : 'none';
   if (show && !sensorDiagDone) {
     sensorDiagDone = true;
-    $('btn-sensor-retry').style.display = IS_IOS ? '' : 'none';
     sensorPermissionState().then(state => {
       $('sensor-text').innerHTML = sensorBannerText(state);
     });
@@ -943,6 +974,20 @@ if (!isTouch) {
   startGPS();
   setMode('map');
 }
+
+// Self-update: GitHub Pages caches index.html for ~10 min, so phones get stuck
+// on old builds. A unique query on version.json bypasses every cache layer; if
+// a newer build exists, one tap navigates to a fresh, uncached URL.
+async function checkForUpdate() {
+  try {
+    const res = await fetch('version.json?ts=' + Date.now(), { cache: 'no-store' });
+    const j = await res.json();
+    if (j.v > APP_VERSION_NUM) $('update-toast').style.display = 'block';
+  } catch (e) {}
+}
+$('update-toast').onclick = () => location.href = './?u=' + Date.now();
+checkForUpdate();
+setInterval(checkForUpdate, 5 * 60 * 1000);
 
 fetchBoards().then(() => {
   if (!trains.size) setTimeout(fetchBoards, 10000); // fast retry if first pass got nothing
