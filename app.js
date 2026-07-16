@@ -86,8 +86,8 @@ const REFRESH_MS = 150 * 1000;         // 15 boards per cycle — stay inside AP
 const LEG_LENGTH_FUDGE = 1.25;         // straight-line -> track-length estimate for legs
                                        // extending beyond the tunnel
 const DEFAULT_POS = { lat: 47.37770, lon: 8.54385 };  // Central, Zurich — fallback/desktop
-const APP_VERSION = 'v10';              // shown in the HUD — keep in sync with
-const APP_VERSION_NUM = 10;             // the ?v= cache-buster in index.html
+const APP_VERSION = 'v11';              // shown in the HUD — keep in sync with
+const APP_VERSION_NUM = 11;             // the ?v= cache-buster in index.html
                                        // and with version.json
 
 // ------------------------------------------------------------- geo utils ---
@@ -376,7 +376,7 @@ function updateMap(list) {
 
 // -------------------------------------------------------------- AR mode ----
 
-let renderer, scene, camera, arBuilt = false;
+let renderer, scene, camera, rig, arBuilt = false;
 let origin = null;            // {lat, lon} of ENU origin
 let yawOffset = 0;            // manual compass calibration, radians
 let pitchOffset = 0;
@@ -384,6 +384,16 @@ let deviceQuat = null;        // from sensors
 let mouseLook = { yaw: 0, pitch: -0.5, active: false };
 let hasSensors = false;
 const trainMeshes = new Map();
+const _camPos = new THREE.Vector3();
+
+// WebXR (Android Chrome): immersive-ar has a REAL permission prompt and
+// ARCore visual-inertial tracking — the motion-sensor site setting (which
+// Chrome never prompts for) becomes irrelevant. Sensor mode stays as fallback.
+let xrSession = null, xrSupported = false;
+if (navigator.xr && navigator.xr.isSessionSupported) {
+  navigator.xr.isSessionSupported('immersive-ar')
+    .then(s => { xrSupported = s; }).catch(() => {});
+}
 
 function toENU(lon, lat) {
   return {
@@ -398,6 +408,11 @@ function buildARScene() {
   origin = { lat: userPos.lat, lon: userPos.lon };
   scene = new THREE.Scene();
   camera = new THREE.PerspectiveCamera(65, innerWidth / innerHeight, 0.1, 8000);
+  // In WebXR the camera pose (relative to this rig) is owned by ARCore; the
+  // rig aligns XR space to the world: yaw from 🎯 Align, position from GPS.
+  rig = new THREE.Group();
+  rig.add(camera);
+  scene.add(rig);
   renderer = new THREE.WebGLRenderer({ canvas: $('ar-canvas'), alpha: true, antialias: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.setSize(innerWidth, innerHeight);
@@ -523,13 +538,25 @@ function updateAR(list, now) {
   // camera
   if (!isFinite(yawOffset)) yawOffset = 0;   // a NaN here would blank the scene
   const ue = toENU(vp().lon, vp().lat);
-  camera.position.set(ue.x, 0, ue.z);
-  if (deviceQuat) {
-    camera.quaternion.copy(deviceQuat);
-    camera.rotateOnWorldAxis(new THREE.Vector3(0, 1, 0), yawOffset);
+  if (xrSession) {
+    // ARCore owns the camera pose (buttery local tracking). The rig aligns XR
+    // space to the world: yaw comes from 🎯 Align, and the position is
+    // slow-anchored to smoothed GPS so ARCore's motion stays crisp while GPS
+    // drift is corrected gently (snap only on a genuine jump).
+    rig.rotation.y = yawOffset;
+    camera.getWorldPosition(_camPos);
+    const ex = ue.x - _camPos.x, ez = ue.z - _camPos.z;
+    if (Math.hypot(ex, ez) > 75) { rig.position.x += ex; rig.position.z += ez; }
+    else { rig.position.x += ex * 0.02; rig.position.z += ez * 0.02; }
   } else {
-    camera.quaternion.setFromEuler(
-      new THREE.Euler(mouseLook.pitch, mouseLook.yaw + yawOffset, 0, 'YXZ'));
+    camera.position.set(ue.x, 0, ue.z);
+    if (deviceQuat) {
+      camera.quaternion.copy(deviceQuat);
+      camera.rotateOnWorldAxis(new THREE.Vector3(0, 1, 0), yawOffset);
+    } else {
+      camera.quaternion.setFromEuler(
+        new THREE.Euler(mouseLook.pitch, mouseLook.yaw + yawOffset, 0, 'YXZ'));
+    }
   }
   renderer.render(scene, camera);
 }
@@ -580,7 +607,9 @@ let compassBias = 0;      // compass error measured by the user's 🎯 alignment
 // correcting gyro DRIFT through that bias, extra slowly (~30 s time constant)
 // so short magnetic disturbances can't drag a good alignment around.
 function feedAutoRef(absAlphaDeg, accuracyDeg, label) {
-  if (lastRelAlpha === null) return;
+  // In a WebXR session yawOffset aligns XR space to north — a completely
+  // different quantity than the compass-vs-gyro offset; keep hands off.
+  if (xrSession || lastRelAlpha === null) return;
   if (typeof accuracyDeg === 'number' && (accuracyDeg < 0 || accuracyDeg > 50)) return;
   headingSource = label + (userAligned ? ' +🎯' : '');
   const target = normAngle((absAlphaDeg - lastRelAlpha) * Math.PI / 180);
@@ -726,6 +755,41 @@ function checkSensorBanner() {
     sensorPermissionState().then(state => {
       $('sensor-text').innerHTML = sensorBannerText(state);
     });
+  }
+}
+
+// MUST be called directly from a user gesture (requestSession requires it).
+// Returns false on any failure so the caller can fall back to sensor AR.
+async function startXR() {
+  try {
+    const session = await navigator.xr.requestSession('immersive-ar', {
+      requiredFeatures: ['local'],
+      optionalFeatures: ['dom-overlay'],
+      domOverlay: { root: document.body },
+    });
+    buildARScene();
+    renderer.xr.enabled = true;
+    renderer.xr.setReferenceSpaceType('local');
+    await renderer.xr.setSession(session);
+    xrSession = session;
+    hasSensors = true;              // tracking comes from ARCore, not sensors
+    headingSource = 'WebXR — tap 🎯 Align';
+    setMode('ar');
+    renderer.setAnimationLoop(frame);   // XR frames drive the loop now
+    session.addEventListener('end', () => {
+      xrSession = null;
+      renderer.setAnimationLoop(null);
+      renderer.xr.enabled = false;
+      hasSensors = false;               // re-diagnose if sensor AR takes over
+      requestAnimationFrame(frame);
+    });
+    const hint = $('calib-hint');
+    hint.innerHTML = 'AR tracking active — tap 🎯 Align once so the tunnels point north';
+    hint.style.opacity = 1;
+    setTimeout(() => hint.style.opacity = 0, 12000);
+    return true;
+  } catch (e) {
+    return false;
   }
 }
 
@@ -916,6 +980,7 @@ function setMode(m) {
   $('btn-map').classList.toggle('active', m === 'map');
   $('btn-align').style.display = m === 'ar' ? '' : 'none';
   if (m !== 'ar' && alignMode) exitAlign();
+  if (m !== 'ar' && xrSession) xrSession.end();
   if (m === 'map') { initMap(); setTimeout(() => map.invalidateSize(), 50); }
 }
 
@@ -944,20 +1009,25 @@ function frame(now) {
     setStatus();
     checkSensorBanner();
   }
-  requestAnimationFrame(frame);
+  if (!xrSession) requestAnimationFrame(frame);   // in XR, setAnimationLoop drives
 }
 
 $('btn-start-ar').onclick = async () => {
   $('start-overlay').style.display = 'none';
   startGPS();
-  await startAR();
+  if (xrSupported && await startXR()) return;   // Android: real AR w/ permission prompt
+  await startAR();                              // fallback: sensor-driven AR
 };
 $('btn-start-map').onclick = () => {
   $('start-overlay').style.display = 'none';
   startGPS();
   setMode('map');
 };
-$('btn-ar').onclick = () => { if (!arBuilt) { buildARScene(); } setMode('ar'); };
+$('btn-ar').onclick = async () => {
+  if (xrSupported && !xrSession && await startXR()) return;
+  if (!arBuilt) { buildARScene(); }
+  setMode('ar');
+};
 $('btn-map').onclick = () => setMode('map');
 $('btn-align').onclick = () => alignMode ? exitAlign() : enterAlign();
 $('btn-sensor-retry').onclick = async () => {   // button tap = fresh user gesture

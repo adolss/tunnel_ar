@@ -34,10 +34,14 @@ tram traffic move through the tunnels beneath you — live.
   in tunnels, so positions are interpolated along the corridor centerline
   between the timed stops, with accelerate/brake easing. Typically accurate to
   a handful of seconds.
-- **AR view**: camera passthrough + WebGL overlay driven by GPS and the compass.
-  Tunnels are drawn as glowing tubes at approximate depth, trains as moving
-  blocks with a beacon line and a pulsing ring at street level, plus a north-up
-  radar inset. **Map view** is a 2D fallback that works anywhere.
+- **AR view**: on Android Chrome it uses **WebXR** (`immersive-ar`) when
+  available — Chrome shows a real AR permission prompt and ARCore provides
+  drift-free tracking; tap 🎯 Align once per session so the scene points
+  north. Elsewhere it falls back to camera passthrough + gyro/compass driven
+  by device sensors. Tunnels are drawn as glowing tubes at approximate depth,
+  trains as moving blocks with a beacon line and a pulsing ring at street
+  level, plus a north-up radar inset. **Map view** is a 2D fallback that
+  works anywhere.
 
 ## Run it
 
