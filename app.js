@@ -86,8 +86,8 @@ const REFRESH_MS = 150 * 1000;         // 15 boards per cycle — stay inside AP
 const LEG_LENGTH_FUDGE = 1.25;         // straight-line -> track-length estimate for legs
                                        // extending beyond the tunnel
 const DEFAULT_POS = { lat: 47.37770, lon: 8.54385 };  // Central, Zurich — fallback/desktop
-const APP_VERSION = 'v11';              // shown in the HUD — keep in sync with
-const APP_VERSION_NUM = 11;             // the ?v= cache-buster in index.html
+const APP_VERSION = 'v12';              // shown in the HUD — keep in sync with
+const APP_VERSION_NUM = 12;             // the ?v= cache-buster in index.html
                                        // and with version.json
 
 // ------------------------------------------------------------- geo utils ---
@@ -770,10 +770,15 @@ async function startXR() {
     buildARScene();
     renderer.xr.enabled = true;
     renderer.xr.setReferenceSpaceType('local');
+    renderer.setClearColor(0x000000, 0);   // transparent: camera shows through
     await renderer.xr.setSession(session);
     xrSession = session;
     hasSensors = true;              // tracking comes from ARCore, not sensors
     headingSource = 'WebXR — tap 🎯 Align';
+    // the DOM overlay is drawn OVER the camera feed — an opaque black body
+    // background would black out the whole view
+    document.documentElement.style.background = 'transparent';
+    document.body.style.background = 'transparent';
     setMode('ar');
     renderer.setAnimationLoop(frame);   // XR frames drive the loop now
     session.addEventListener('end', () => {
@@ -781,6 +786,9 @@ async function startXR() {
       renderer.setAnimationLoop(null);
       renderer.xr.enabled = false;
       hasSensors = false;               // re-diagnose if sensor AR takes over
+      document.documentElement.style.background = '';
+      document.body.style.background = '';
+      setMode(mode);                    // restore the on-page canvas visibility
       requestAnimationFrame(frame);
     });
     const hint = $('calib-hint');
@@ -973,7 +981,9 @@ function drawRadar(list) {
 function setMode(m) {
   mode = m;
   $('map').style.display = m === 'map' ? 'block' : 'none';
-  $('ar-canvas').style.display = m === 'ar' ? 'block' : 'none';
+  // during a WebXR session rendering goes to the XR compositor layer — the
+  // on-page canvas would just sit as a stale black sheet inside the DOM overlay
+  $('ar-canvas').style.display = (m === 'ar' && !xrSession) ? 'block' : 'none';
   $('camera').style.display = (m === 'ar' && $('camera').srcObject) ? 'block' : 'none';
   radarEl.style.display = m === 'ar' ? 'block' : 'none';
   $('btn-ar').classList.toggle('active', m === 'ar');
